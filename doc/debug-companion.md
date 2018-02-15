@@ -2,15 +2,21 @@
 
 ## Overview
 There’s currently no turn-key way to debug ChakraCore-embedded scenarios.  It’s possible to write a debugger using the JsDiag* API surface, but it’s non-trivial to leverage any existing debugging tools.  This feature aims to provide an end-to-end flor for debugging a ChakraCore-embedded application VS Code.
- 
+
+![Overview Diagram](./assets/companion-overview.png)
+
 This still doesn’t provide a completely turn-key solution but implements all the components which complete the flow while allowing the embedder to customize them as needed for their application.
 
 ## Detailed Design
 The design consists of two major components, the companion and the platform implementation.  The companion will be used fully, but the platform implementation can be modified or completely reimplemented as required by the needs of the host application.
- 
+
+![Sequence Diagram](./assets/companion-sequence.png)
+
 ### Threading Model
 Debugging operations are all handled on the main engine thread (whichever thread is currently executing the script).  Requests from the frontend are received on a secondary thread which places them into a thread-safe queue and then calls JsRequestAsyncBreak on the engine.  Once the engine has processed the incoming request (generated any outgoing events), they will be placed in a thread-safe outbound queue and the handler will pick them up and send them to the frontend.
- 
+
+![Threading Model Diagram](./assets/companion-threading-model.png)
+
 ### Debugger Companion
 The primary job of the companion is to collect messages from the host and process them sequentially.  All messages are in the form of JSON objects and will be placed in a thread-safe queue.
 
