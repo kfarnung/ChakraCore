@@ -1,7 +1,7 @@
 # ChakraCore Debugger Companion
 
 ## Overview
-There's currently no turn-key way to debug ChakraCore-embedded scenarios.  It's possible to write a debugger using the JsDiag* API surface, but it's non-trivial to leverage any existing debugging tools.  This feature aims to provide an end-to-end flow for debugging a ChakraCore-embedded application VS Code.
+There's currently no turn-key way to debug ChakraCore-embedded scenarios.  It's possible to write a debugger using the JsDiag* API surface, but it's non-trivial to leverage any existing debugging tools.  This feature aims to provide an end-to-end flow for debugging the scripts running within ChakraCore in a host application.  The focus is on debugging using VS Code, but since the implementation uses the CrDP protocol it should be compatible with other debuggers as well.
 
 ![Overview Diagram](./assets/companion-overview.png)  
 *Figure 1: High level overview of the components*
