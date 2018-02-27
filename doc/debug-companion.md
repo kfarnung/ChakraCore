@@ -9,7 +9,7 @@ There's currently no turn-key way to debug ChakraCore-embedded scenarios.  It's 
 This still doesn't provide a completely turn-key solution but implements all the components which complete the flow while allowing the embedder to customize them as needed for their application.
 
 ## Detailed Design
-The design consists of two major components, the companion and the platform implementation.  The companion will be used fully, but the platform implementation can be modified or completely reimplemented as required by the needs of the host application.
+The design consists of two major components, the `JsDebugProtocolHander` and the `JsDebugService`.  The design is such that there is a clear boundary between the two components and any implementer can provide their own `JsDebugService` instance that conforms to the API.  The `JsDebugService` will be capable of binding to a given port number and providing debugger connectivity for one or more `JsDebugProtocolHander` instances.
 
 ![Sequence Diagram](./assets/companion-sequence.png)  
 *Figure 2: Sequence of operations for processing a debugger command*
@@ -20,52 +20,42 @@ Debugging operations are all handled on the main engine thread (whichever thread
 ![Threading Model Diagram](./assets/companion-threading-model.png)  
 *Figure 3: Threading model for the components*
 
-### Debugger Companion
-The primary job of the companion is to collect messages from the host and process them sequentially.  All messages are in the form of JSON objects and will be placed in a thread-safe queue.
-
-#### Questions
-
-* Multiple companions per Runtime?
-  * No, only one can be registered per Runtime.
-* Multiple platforms per Companion?
-  * No, only one companion is supported at a time
-* Multiple frontend connections?
-  * Gut instinct says no, the second connection should be rejected
-  * I'll need to try this out with node, but I don't see it being necessary unless we get feedback to the contrary
+### Debug Protocol Handler
+The primary job of the protocol handler is to collect messages from the host and process them sequentially.  All messages are in the form of JSON objects and will be placed in a thread-safe queue.  There is a one-to-one connection between a `JsRuntime` and a `JsDebugProtocolHander` instance, but a single process can host multiple simultaneous instances of each.
 
 #### API Surface
 
-##### JsErrorCode JsDiagCompanionCreate(JsRuntime runtime, JsDiagCompanion** companion)
+##### JsErrorCode JsDebugProtocolHanderCreate(JsRuntime runtime, JsDebugProtocolHander** protocolHandler)
 
-Creates a companion instance based on a given runtime.  It also implicitly enables debugging on the given runtime, so it will need to only be done when the engine is not currently running script.  The most straightforward time to initialize is before any code has been run inside the engine, but it's up to the host application to ensure that no code is running before trying to initialize.
+Creates a protocol handler instance based on a given runtime.  It also implicitly enables debugging on the given runtime, so it will need to only be done when the engine is not currently running script.  The most straightforward time to initialize is before any code has been run inside the engine, but it's up to the host application to ensure that no code is running before trying to initialize.
 
-* Create an instance of DebuggerCompanion
-* Call JsDiagStartDebugging with the companion callback and itself as state
+* Create an instance of `JsDebugProtocolHander`
+* Call `JsDiagStartDebugging` with the protocol handler callback and itself as state
 
 Returns a pointer to the newly created object.
 
-##### JsErrorCode JsDiagCompanionConnect(JsDiagCompanion* companion, bool breakOnNextLine, JsDiagCompanionSendResponseCallback callback, void* state)
+##### JsErrorCode JsDebugProtocolHanderConnect(JsDebugProtocolHander* protocolHandler, bool breakOnNextLine, JsDebugProtocolHanderSendResponseCallback callback, void* state)
 
-Sets up the connection between the companion and platform.  This includes the callback used to send responses and whether to break on the next line after the connection occurs.
+Sets up the connection between the protocol handler and platform.  This includes the callback used to send responses and whether to break on the next line after the connection occurs.
 
 The breakOnNextLine boolean causes a flag to be set in the debugger and a call to JsDiagRequestAsyncBreak to be issued.  That call, once fulfilled, will cause the engine to hold in the debugger and continue to pump messages to any connected clients.
 
-##### JsErrorCode JsDiagCompanionSendCommand(JsDiagCompanion* companion, char* command)
+##### JsErrorCode JsDebugProtocolHanderSendCommand(JsDebugProtocolHander* protocolHandler, char* command)
 
-Sends a JSON encoded command to the companion.  The command will be processed and send a response asynchronously.
+Sends a JSON encoded command to the protocol handler.  The command will be processed and send a response asynchronously.
 
-##### JsErrorCode JsDiagCompanionDisconnect(JsDiagCompanion*)
+##### JsErrorCode JsDebugProtocolHanderDisconnect(JsDebugProtocolHander* protocolHandler)
 
 Disconnect the callback and clear any breaks.  It may not make sense as disconnecting and reconnecting is not a core scenario.
 
-##### JsErrorCode JsDiagCompanionDispose(JsDiagCompanion*)
+##### JsErrorCode JsDebugProtocolHanderDispose(JsDebugProtocolHander* protocolHandler)
 
-Dispose of the companion:
+Dispose of the protocol handler:
 * Disconnect any listeners
-* Call JsDiagStopDebugging to unregister the companion from the engine
-* Delete the instance of the companion
+* Call JsDiagStopDebugging to unregister the protocol handler from the engine
+* Delete the instance of the protocol handler
 
-This may be able to be combined with the JsDiagCompanionDisconnect function.
+This may be able to be combined with the JsDebugProtocolHanderDisconnect function.
 
 #### Dependencies
 * Basic synchronization (mutex)
@@ -100,26 +90,26 @@ The HTTP endpoint services some basic requests from the frontend:
 * /json/activate/\<id\>
   * Unsure what the purpose is, Node.js just seems to return "Target activated" if it's already active or nothing otherwise.
 
-These are basic GET requests and shouldn't require any complex parsing (HTTP headers for instance).  It's not clear if any of these should be forwarded to the companion for responses, at the moment it seems like these are all host-specific (except maybe the protocol).
+These are basic GET requests and shouldn't require any complex parsing (HTTP headers for instance).  It's not clear if any of these should be forwarded to the protocol handler for responses, at the moment it seems like these are all host-specific (except maybe the protocol).
 
 ## Code Layout and Packaging
 
-### Debugger Companion
+### Debugger Protocol Handler
 
-The debugger companion only uses the public (but still experimental) API surface of ChakraCore.  This allows some flexibility in where the code should live:
+The debugger protocol handler only uses the public (but still experimental) API surface of ChakraCore.  This allows some flexibility in where the code should live:
 * A separate repo which builds against the public interface of ChakraCore as an external dependency.
 * As part of the existing ChakraCore repo where it can build against a given version of ChakraCore.
 
-Since the debugger companion will be tightly coupled with the (public, but experimental) interface of ChakraCore, it makes sense for it to live alongside the ChakraCore version for which it was built.  It's beyond the scope of this project to try and support all older versions but going forward we will still want to innovate in the debugger space and will not want to manage these changes externally.
-The code for the companion will live inside of ChakraCore and build a LIB (Debugger.Companion.lib) and a DLL (Debugger.Companion.dll).
+Since the debugger protocol handler will be tightly coupled with the (public, but experimental) interface of ChakraCore, it makes sense for it to live alongside the ChakraCore version for which it was built.  It's beyond the scope of this project to try and support all older versions but going forward we will still want to innovate in the debugger space and will not want to manage these changes externally.
+The code for the protocol handler will live inside of ChakraCore and build a LIB (Debugger.ProtocolHandler.lib) and a DLL (Debugger.ProtocolHandler.dll).
 
 Paths:
-* \<root\>\core\lib\Debugger\Companion\
-  * Debugger.Companion.vcxproj
-  * DebuggerCompanion.h
+* \<root\>\core\lib\Debugger\ProtocolHandler\
+  * Debugger.ProtocolHandler.vcxproj
+  * DebuggerProtocolHandler.h
   * \<core implementation files\>
-* \<root\>\core\bin\Debugger\Companion\Debugger.Companion.vcxproj
-  * DebuggerCompanion.def
+* \<root\>\core\bin\Debugger\ProtocolHandler\Debugger.ProtocolHandler.vcxproj
+  * DebuggerProtocolHandler.def
 
 The primary consumption will be via the DLL which will use only JSRT APIs to interact with the engine.
 
@@ -132,11 +122,11 @@ Possible locations:
 
 ### Sample Code
 
-The sample code will combine ChakraCore, ChakraCore.DebuggerCompanion, and ChakraCore.DebuggerPlatform along with a basic code sample which loads JS and executes it.
+The sample code will combine ChakraCore, ChakraCore.DebuggerProtocolHandler, and ChakraCore.DebuggerPlatform along with a basic code sample which loads JS and executes it.
 
 ## Work Items
 
-### Debugger Companion
+### Debugger Protocol Handler
 
 * Establish project structure and basic build (including cross platform)
 * Stub out API interface
@@ -154,12 +144,12 @@ The sample code will combine ChakraCore, ChakraCore.DebuggerCompanion, and Chakr
 * Establish project structure and basic build (including cross platform)
 * Build the HTTP/WebSockets endpoint
 * Build the HTTP request handler code
-* Build the Companion interface code
+* Build the protocol handler interface code
 * Write test cases
 
 ### Documentation
 
-* Add documentation for the JsDiagCompanion* methods to the ChakraCore wiki
+* Add documentation for the JsDebugProtocolHander* methods to the ChakraCore wiki
 * Add documentation for building the DebuggerPlatform code
 * Add documentation for using the DebuggerPlatform code
 
