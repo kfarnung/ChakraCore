@@ -3,7 +3,7 @@
 ## Overview
 There's currently no turn-key way to debug ChakraCore-embedded scenarios.  It's possible to write a debugger using the JsDiag* API surface, but it's non-trivial to leverage any existing debugging tools.  This feature aims to provide an end-to-end flow for debugging the scripts running within ChakraCore in a host application.  The focus is on debugging using VS Code, but since the implementation uses the CrDP protocol it should be compatible with other debuggers as well.
 
-![Overview Diagram](./assets/companion-overview.png)  
+![Overview Diagram](./assets/debug-companion-overview.png)  
 *Figure 1: High level overview of the components*
 
 This still doesn't provide a completely turn-key solution but implements all the components which complete the flow while allowing the embedder to customize them as needed for their application.
@@ -11,13 +11,13 @@ This still doesn't provide a completely turn-key solution but implements all the
 ## Detailed Design
 The design consists of two major components, the `JsDebugProtocolHander` and the `JsDebugService`.  The design is such that there is a clear boundary between the two components and any implementer can provide their own `JsDebugService` instance that conforms to the API.  The `JsDebugService` will be capable of binding to a given port number and providing debugger connectivity for one or more `JsDebugProtocolHander` instances.
 
-![Sequence Diagram](./assets/companion-sequence.png)  
+![Sequence Diagram](./assets/debug-companion-sequence.png)  
 *Figure 2: Sequence of operations for processing a debugger command*
 
 ### Threading Model
 Debugging operations are all handled on the main engine thread (whichever thread is currently executing the script).  Requests from the frontend are received on a secondary thread which places them into a thread-safe queue and then calls JsRequestAsyncBreak on the engine.  Once the engine has processed the incoming request (generated any outgoing events), they will be placed in a thread-safe outbound queue and the handler will pick them up and send them to the frontend.
 
-![Threading Model Diagram](./assets/companion-threading-model.png)  
+![Threading Model Diagram](./assets/debug-companion-threading-model.png)  
 *Figure 3: Threading model for the components*
 
 ### Debug Protocol Handler
