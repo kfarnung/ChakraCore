@@ -9,7 +9,7 @@ There's currently no turn-key way to debug ChakraCore-embedded scenarios.  It's 
 This still doesn't provide a completely turn-key solution but implements all the components which complete the flow while allowing the embedder to customize them as needed for their application.
 
 ## Detailed Design
-The design consists of two major components, the `JsDebugProtocolHander` and the `JsDebugService`.  The design is such that there is a clear boundary between the two components and any implementer can provide their own `JsDebugService` instance that conforms to the API.  The `JsDebugService` will be capable of binding to a given port number and providing debugger connectivity for one or more `JsDebugProtocolHander` instances.
+The design consists of two major components, the `JsDebugProtocolHandler` and the `JsDebugService`.  The design is such that there is a clear boundary between the two components and any implementer can provide their own `JsDebugService` instance that conforms to the API.  The `JsDebugService` will be capable of binding to a given port number and providing debugger connectivity for one or more `JsDebugProtocolHandler` instances.
 
 ![Sequence Diagram](./assets/debug-companion-sequence.png)  
 *Figure 2: Sequence of operations for processing a debugger command*
@@ -21,41 +21,64 @@ Debugging operations are all handled on the main engine thread (whichever thread
 *Figure 3: Threading model for the components*
 
 ### Debug Protocol Handler
-The primary job of the protocol handler is to collect messages from the host and process them sequentially.  All messages are in the form of JSON objects and will be placed in a thread-safe queue.  There is a one-to-one connection between a `JsRuntime` and a `JsDebugProtocolHander` instance, but a single process can host multiple simultaneous instances of each.
+The primary job of the protocol handler is to collect messages from the host and process them sequentially.  All messages are in the form of JSON objects and will be placed in a thread-safe queue.  There is a one-to-one connection between a `JsRuntime` and a `JsDebugProtocolHandler` instance, but a single process can host multiple simultaneous instances of each.
 
 #### API Surface
 
-##### JsErrorCode JsDebugProtocolHanderCreate(JsRuntime runtime, JsDebugProtocolHander** protocolHandler)
+```cpp
+typedef void *JsDebugProtocolHandler;
+typedef void(CHAKRA_CALLBACK *JsDebugProtocolHandlerSendResponseCallback)(const char *response);
 
-Creates a protocol handler instance based on a given runtime.  It also implicitly enables debugging on the given runtime, so it will need to only be done when the engine is not currently running script.  The most straightforward time to initialize is before any code has been run inside the engine, but it's up to the host application to ensure that no code is running before trying to initialize.
+/// <summary>Creates a <seealso cref="JsDebugProtocolHandler" /> instance for a given runtime.</summary>
+/// <remarks>
+///     It also implicitly enables debugging on the given runtime, so it will need to only be done when the engine is
+///     not currently running script.  The most straightforward time to initialize is before any code has been run
+///     inside the engine, but it's up to the host application to ensure that no code is running before trying to
+///     initialize.
+/// </remarks>
+/// <param name="runtime">The runtime to debug.</param>
+/// <param name="protocolHandler">The newly created instance.</param>
+/// <returns>The code <c>JsNoError</c> if the operation succeeded, a failure code otherwise.</returns>
+CHAKRA_API JsDebugProtocolHandlerCreate(JsRuntimeHandle runtime, JsDebugProtocolHandler* protocolHandler);
 
-* Create an instance of `JsDebugProtocolHander`
-* Call `JsDiagStartDebugging` with the protocol handler callback and itself as state
+/// <summary>Releases the instance object.</summary>
+/// <remarks>
+///     It also implicitly disables debugging on the given runtime, so it will need to only be done when the engine is
+///     not currently running script.
+/// </remarks>
+/// <param name="protocolHandler">The instance to release.</param>
+/// <returns>The code <c>JsNoError</c> if the operation succeeded, a failure code otherwise.</returns>
+CHAKRA_API JsDebugProtocolHandlerDispose(JsDebugProtocolHandler protocolHandler);
 
-Returns a pointer to the newly created object.
+/// <summary>Connect a callback to the protocol handler.</summary>
+/// <remarks>
+///     Any events that occurred before connecting will be queued and dispatched upon successful connection.
+/// </remarks>
+/// <param name="protocolHandler">The instance to connect to.</param>
+/// <param name="breakOnNextLine">Indicates whether to break on the next line of code.</param>
+/// <param name="callback">The response callback function pointer.</param>
+/// <param name="state">The state object to return on each invocation of the callback.</param>
+/// <returns>The code <c>JsNoError</c> if the operation succeeded, a failure code otherwise.</returns>
+CHAKRA_API JsDebugProtocolHandlerConnect(
+    JsDebugProtocolHandler protocolHandler,
+    bool breakOnNextLine,
+    JsDebugProtocolHandlerSendResponseCallback callback,
+    void* state);
 
-##### JsErrorCode JsDebugProtocolHanderConnect(JsDebugProtocolHander* protocolHandler, bool breakOnNextLine, JsDebugProtocolHanderSendResponseCallback callback, void* state)
+/// <summary>Disconnect from the protocol handler and clear any breakpoints.</summary>
+/// <param name="protocolHandler">The instance to disconnect from.</param>
+/// <returns>The code <c>JsNoError</c> if the operation succeeded, a failure code otherwise.</returns>
+CHAKRA_API JsDebugProtocolHandlerDisconnect(JsDebugProtocolHandler protocolHandler);
 
-Sets up the connection between the protocol handler and platform.  This includes the callback used to send responses and whether to break on the next line after the connection occurs.
-
-The breakOnNextLine boolean causes a flag to be set in the debugger and a call to JsDiagRequestAsyncBreak to be issued.  That call, once fulfilled, will cause the engine to hold in the debugger and continue to pump messages to any connected clients.
-
-##### JsErrorCode JsDebugProtocolHanderSendCommand(JsDebugProtocolHander* protocolHandler, char* command)
-
-Sends a JSON encoded command to the protocol handler.  The command will be processed and send a response asynchronously.
-
-##### JsErrorCode JsDebugProtocolHanderDisconnect(JsDebugProtocolHander* protocolHandler)
-
-Disconnect the callback and clear any breaks.  It may not make sense as disconnecting and reconnecting is not a core scenario.
-
-##### JsErrorCode JsDebugProtocolHanderDispose(JsDebugProtocolHander* protocolHandler)
-
-Dispose of the protocol handler:
-* Disconnect any listeners
-* Call JsDiagStopDebugging to unregister the protocol handler from the engine
-* Delete the instance of the protocol handler
-
-This may be able to be combined with the JsDebugProtocolHanderDisconnect function.
+/// <summary>Send an incoming JSON-formatted command to the protocol handler.</summary>
+/// <remarks>
+///     The response will be returned asynchronously.
+/// </remarks>
+/// <param name="protocolHandler">The receiving protocol handler.</param>
+/// <param name="command">The JSON-formatted command to send.</param>
+/// <returns>The code <c>JsNoError</c> if the operation succeeded, a failure code otherwise.</returns>
+CHAKRA_API JsDebugProtocolHandlerSendCommand(JsDebugProtocolHandler protocolHandler, const char* command);
+```
 
 #### Dependencies
 * Basic synchronization (mutex)
@@ -91,6 +114,48 @@ The HTTP endpoint services some basic requests from the frontend:
   * Unsure what the purpose is, Node.js just seems to return "Target activated" if it's already active or nothing otherwise.
 
 These are basic GET requests and shouldn't require any complex parsing (HTTP headers for instance).  It's not clear if any of these should be forwarded to the protocol handler for responses, at the moment it seems like these are all host-specific (except maybe the protocol).
+
+#### API Surface
+
+```cpp
+typedef void *JsDebugService;
+typedef void(CHAKRA_CALLBACK *JsDebugServiceSendResponseCallback)(char *response);
+
+/// <summary>Creates a <seealso cref="JsDebugProtocolHandler" /> instance.</summary>
+/// <param name="service">The newly created instance.</param>
+/// <returns>The code <c>JsNoError</c> if the operation succeeded, a failure code otherwise.</returns>
+CHAKRA_API JsDebugServiceCreate(JsDebugService* service);
+
+/// <summary>Releases the instance object.</summary>
+/// <param name="service">The instance to release.</param>
+/// <returns>The code <c>JsNoError</c> if the operation succeeded, a failure code otherwise.</returns>
+CHAKRA_API JsDebugServiceDispose(JsDebugService service);
+
+/// <summary>Register a handler instance with this service.</summary>
+/// <param name="service">The service instance to register with.</param>
+/// <param name="id">The ID of the handler (it must be unique).</param>
+/// <param name="handler">The handler instance.</param>
+/// <param name="breakOnNextLine">Indicates whether to break on the next line of code.</param>
+/// <returns>The code <c>JsNoError</c> if the operation succeeded, a failure code otherwise.</returns>
+CHAKRA_API JsDebugServiceRegisterHandler(JsDebugService service, const char* id, JsDebugProtocolHandler handler, bool breakOnNextLine);
+
+/// <summary>Unregister a handler instance from this service.</summary>
+/// <param name="service">The service instance to unregister from.</param>
+/// <param name="id">The ID of the handler to unregister.</param>
+/// <returns>The code <c>JsNoError</c> if the operation succeeded, a failure code otherwise.</returns>
+CHAKRA_API JsDebugServiceUnregisterHandler(JsDebugService service, const char* id);
+
+/// <summary>Start listening on a given port.</summary>
+/// <param name="service">The service instance to listen with.</param>
+/// <param name="port">The port number to listen on.</param>
+/// <returns>The code <c>JsNoError</c> if the operation succeeded, a failure code otherwise.</returns>
+CHAKRA_API JsDebugServiceListen(JsDebugService service, uint16_t port);
+
+/// <summary>Stop listening and close any connections.</summary>
+/// <param name="service">The service instance to close.</param>
+/// <returns>The code <c>JsNoError</c> if the operation succeeded, a failure code otherwise.</returns>
+CHAKRA_API JsDebugServiceClose(JsDebugService service);
+```
 
 ## Code Layout and Packaging
 
@@ -149,7 +214,7 @@ The sample code will combine ChakraCore, ChakraCore.DebuggerProtocolHandler, and
 
 ### Documentation
 
-* Add documentation for the JsDebugProtocolHander* methods to the ChakraCore wiki
+* Add documentation for the JsDebugProtocolHandler* methods to the ChakraCore wiki
 * Add documentation for building the DebuggerPlatform code
 * Add documentation for using the DebuggerPlatform code
 
